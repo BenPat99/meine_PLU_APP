@@ -1,0 +1,956 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lidl PLU-Finder</title>
+  
+  <!-- PWA Manifest & Theme Color -->
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#004691">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            lidl: {
+              blue: '#004691',
+              darkblue: '#002f63',
+              yellow: '#FFD200',
+              red: '#E2001A',
+              lightbg: '#F3F4F8',
+              surface: '#FFFFFF',
+              surfaceVariant: '#EAEFF8',
+              textPrimary: '#111827',
+              textSecondary: '#4B5563',
+            }
+          },
+          borderRadius: {
+            'expressive': '32px',
+            'card': '24px',
+            'chip': '16px'
+          },
+          boxShadow: {
+            'expressive': '0 10px 30px -5px rgba(0, 70, 145, 0.08), 0 4px 12px -2px rgba(0, 0, 0, 0.05)',
+            'floating': '0 16px 40px -8px rgba(0, 70, 145, 0.18)',
+            'active': '0 2px 6px 0 rgba(0, 0, 0, 0.1)'
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- React & Babel -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Fuse.js für performante Fuzzy Search -->
+  <script src="https://cdn.jsdelivr.net/npm/fuse.js@6.6.2"></script>
+
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <!-- Google Font: Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+
+  <style>
+    body {
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      background-color: #F3F4F8;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .custom-scrollbar::-webkit-scrollbar {
+      width: 6px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-track {
+      background: rgba(0, 0, 0, 0.03);
+      border-radius: 8px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb {
+      background: rgba(0, 70, 145, 0.2);
+      border-radius: 8px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+      background: rgba(0, 70, 145, 0.4);
+    }
+  </style>
+</head>
+<body class="text-lidl-textPrimary antialiased selection:bg-lidl-yellow selection:text-lidl-blue">
+  <div id="root"></div>
+
+  <!-- PWA SERVICE WORKER REGISTRIERUNG & DAUERHAFTER SPEICHER -->
+  <script>
+    // Service Worker Registrierung
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js')
+          .then(reg => console.log('Service Worker erfolgreich registriert:', reg.scope))
+          .catch(err => console.warn('Service Worker Registrierung fehlgeschlagen:', err));
+      });
+    }
+
+    // Schutz vor automatischer System-Bereinigung von LocalStorage (Persistent Storage API)
+    if (navigator.storage && navigator.storage.persist) {
+      navigator.storage.persist().then(isPersistent => {
+        if (isPersistent) {
+          console.log("App-Speicher ist dauerhaft vor Systembereinigung geschützt.");
+        } else {
+          console.log("Speicher wird regulär vom Browser verwaltet.");
+        }
+      });
+    }
+  </script>
+
+  <script type="text/babel">
+    const { useState, useEffect, useMemo, useRef } = React;
+
+    // --- STANDARD DATENBASIS AUS 'Artikel zu Spicker.xlsx' + FEST INTEGRIERTE ERGÄNZUNGEN ---
+    const DEFAULT_ARTICLE_DATABASE = [
+      // AKTION / GETRÄNKE & SPEZIALARTIKEL (FEST IM CODE)
+      { plu: "728", artikel: "Coca-Cola", kategorie: "Aktion" },
+      { plu: "770", artikel: "Coca-Cola Zero", kategorie: "Aktion" },
+
+      // BAKE-OFF
+      { plu: "572", artikel: "Apfeltasche", kategorie: "Bake-Off" },
+      { plu: "791", artikel: "Baguette", kategorie: "Bake-Off" },
+      { plu: "813", artikel: "Bauernbaguette", kategorie: "Bake-Off" },
+      { plu: "781", artikel: "Bauernbrötchen", kategorie: "Bake-Off" },
+      { plu: "935", artikel: "Bauernkruste", kategorie: "Bake-Off" },
+      { plu: "744", artikel: "Bauernmildes", kategorie: "Bake-Off" },
+      { plu: "861", artikel: "Berliner Mehrfrucht", kategorie: "Bake-Off" },
+      { plu: "841", artikel: "Bioland Sauerteigkruste mit Dinkel", kategorie: "Bake-Off" },
+      { plu: "811", artikel: "Bioland Steinofenbrötchen", kategorie: "Bake-Off" },
+      { plu: "730", artikel: "Bioland Vollkorn-Körnerlaib", kategorie: "Bake-Off" },
+      { plu: "715", artikel: "Bioland Vollkorn-Krusti", kategorie: "Bake-Off" },
+      { plu: "985", artikel: "Börek", kategorie: "Bake-Off" },
+      { plu: "718", artikel: "Brezel / Käse", kategorie: "Bake-Off" },
+      { plu: "991", artikel: "Butter-Croissant", kategorie: "Bake-Off" },
+      { plu: "763", artikel: "Ciabatta", kategorie: "Bake-Off" },
+      { plu: "838", artikel: "Dinkel Kastenbrot", kategorie: "Bake-Off" },
+      { plu: "905", artikel: "Dinkel Vollkornbrötchen", kategorie: "Bake-Off" },
+      { plu: "794", artikel: "Doppelbrötchen", kategorie: "Bake-Off" },
+      { plu: "965", artikel: "Fladenbrot", kategorie: "Bake-Off" },
+      { plu: "693", artikel: "Franzbrötchen", kategorie: "Bake-Off" },
+      { plu: "736", artikel: "Geflügel Hot Dog", kategorie: "Bake-Off" },
+      { plu: "797", artikel: "Heidelbeer-Vanille-Hörnchen", kategorie: "Bake-Off" },
+      { plu: "957", artikel: "Käse-Kürbis-Stange", kategorie: "Bake-Off" },
+      { plu: "934", artikel: "Käse-Laugenstange", kategorie: "Bake-Off" },
+      { plu: "713", artikel: "Knusperstange Käseschinken", kategorie: "Bake-Off" },
+      { plu: "901", artikel: "Körniges Sauerteigbrot", kategorie: "Bake-Off" },
+      { plu: "989", artikel: "Kürbisbrötchen", kategorie: "Bake-Off" },
+      { plu: "869", artikel: "Laugenbrötchen", kategorie: "Bake-Off" },
+      { plu: "512", artikel: "Laugenbrezel", kategorie: "Bake-Off" },
+      { plu: "688", artikel: "Laugeneck", kategorie: "Bake-Off" },
+      { plu: "887", artikel: "Meisterbrot mit Saat", kategorie: "Bake-Off" },
+      { plu: "802", artikel: "Milchbrötchen", kategorie: "Bake-Off" },
+      { plu: "698", artikel: "Nuss-Nougat-Krapfen", kategorie: "Bake-Off" },
+      { plu: "928", artikel: "Nuss-Nougat Croissant", kategorie: "Bake-Off" },
+      { plu: "951", artikel: "Pinky Donut", kategorie: "Bake-Off" },
+      { plu: "976", artikel: "Pizza Schnecke", kategorie: "Bake-Off" },
+      { plu: "745", artikel: "Roggenkruste", kategorie: "Bake-Off" },
+      { plu: "739", artikel: "Rosenbrötchen dunkel", kategorie: "Bake-Off" },
+      { plu: "941", artikel: "Schinken-Käse-Croissant", kategorie: "Bake-Off" },
+      { plu: "900", artikel: "Schokobrötchen", kategorie: "Bake-Off" },
+      { plu: "937", artikel: "Schokodonut", kategorie: "Bake-Off" },
+      { plu: "816", artikel: "Snack Pizza Salami", kategorie: "Bake-Off" },
+      { plu: "782", artikel: "Sonnen Krusti", kategorie: "Bake-Off" },
+      { plu: "996", artikel: "Vanille Berliner", kategorie: "Bake-Off" },
+      { plu: "988", artikel: "Vital-Kürbiskernbrot", kategorie: "Bake-Off" },
+      { plu: "918", artikel: "Weizenbrötchen", kategorie: "Bake-Off" },
+      { plu: "992", artikel: "Weltmeisterbrötchen", kategorie: "Bake-Off" },
+      { plu: "938", artikel: "Wiener Croissant", kategorie: "Bake-Off" },
+
+      // GEMÜSE
+      { plu: "90", artikel: "Aubergine", kategorie: "Gemüse" },
+      { plu: "400", artikel: "Blumenkohl", kategorie: "Gemüse" },
+      { plu: "410", artikel: "Brokkoli", kategorie: "Gemüse" },
+      { plu: "81", artikel: "Bio Hokkaido Kürbis", kategorie: "Gemüse" },
+      { plu: "26", artikel: "Bioland Knoblauch", kategorie: "Gemüse" },
+      { plu: "64", artikel: "Bioland Möhre", kategorie: "Gemüse" },
+      { plu: "22", artikel: "Cherrytomaten gelb", kategorie: "Gemüse" },
+      { plu: "80", artikel: "Chinakohl", kategorie: "Gemüse" },
+      { plu: "101", artikel: "Eisberg", kategorie: "Gemüse" },
+      { plu: "10", artikel: "Feldgurke", kategorie: "Gemüse" },
+      { plu: "83", artikel: "Fenchel", kategorie: "Gemüse" },
+      { plu: "409", artikel: "Gurke Bio", kategorie: "Gemüse" },
+      { plu: "310", artikel: "Gurke Lose", kategorie: "Gemüse" },
+      { plu: "38", artikel: "Ingwer Bio", kategorie: "Gemüse" },
+      { plu: "282", artikel: "Knollensellerie", kategorie: "Gemüse" },
+      { plu: "202", artikel: "Kohlrabi lose", kategorie: "Gemüse" },
+      { plu: "140", artikel: "Lauchzwiebeln", kategorie: "Gemüse" },
+      { plu: "210", artikel: "Möhre mit Grün", kategorie: "Gemüse" },
+      { plu: "66", artikel: "Paprika rot lose", kategorie: "Gemüse" },
+      { plu: "222", artikel: "Porree", kategorie: "Gemüse" },
+      { plu: "150", artikel: "Radieschen", kategorie: "Gemüse" },
+      { plu: "127", artikel: "Romanasalat", kategorie: "Gemüse" },
+      { plu: "46", artikel: "Rosatomate", kategorie: "Gemüse" },
+      { plu: "86", artikel: "Rotkohl", kategorie: "Gemüse" },
+      { plu: "87", artikel: "Spitzkohl", kategorie: "Gemüse" },
+      { plu: "283", artikel: "Staudensellerie", kategorie: "Gemüse" },
+      { plu: "97", artikel: "Strauchtomate (lose)", kategorie: "Gemüse" },
+      { plu: "25", artikel: "Süßkartoffel", kategorie: "Gemüse" },
+      { plu: "84", artikel: "Weißkohl", kategorie: "Gemüse" },
+      { plu: "93", artikel: "Zucchini", kategorie: "Gemüse" },
+      { plu: "94", artikel: "Zucchini Rund", kategorie: "Gemüse" },
+      { plu: "95", artikel: "Zwiebel weiß süß (Lose)", kategorie: "Gemüse" },
+
+      // OBST
+      { plu: "15", artikel: "Apfel grün lose", kategorie: "Obst" },
+      { plu: "16", artikel: "Apfel Pink Lady", kategorie: "Obst" },
+      { plu: "47", artikel: "Apfel rot lose", kategorie: "Obst" },
+      { plu: "40", artikel: "Aprikose lose", kategorie: "Obst" },
+      { plu: "621", artikel: "Avocado lose", kategorie: "Obst" },
+      { plu: "73", artikel: "Baby Wassermelone", kategorie: "Obst" },
+      { plu: "55", artikel: "Bananen", kategorie: "Obst" },
+      { plu: "19", artikel: "Bio Baby Wassermelone", kategorie: "Obst" },
+      { plu: "20", artikel: "Birne lose", kategorie: "Obst" },
+      { plu: "17", artikel: "Birne rot", kategorie: "Obst" },
+      { plu: "21", artikel: "Cantaloupemelone", kategorie: "Obst" },
+      { plu: "633", artikel: "Drachenfrucht", kategorie: "Obst" },
+      { plu: "70", artikel: "Erdbeeren", kategorie: "Obst" },
+      { plu: "640", artikel: "Fairtrade Avocado", kategorie: "Obst" },
+      { plu: "45", artikel: "Fairtrade Bio Bananen", kategorie: "Obst" },
+      { plu: "48", artikel: "Fairtrade Bananen", kategorie: "Obst" },
+      { plu: "11/24", artikel: "Galliamelone", kategorie: "Obst" },
+      { plu: "608", artikel: "Grapefruit", kategorie: "Obst" },
+      { plu: "624", artikel: "Kiwi", kategorie: "Obst" },
+      { plu: "636", artikel: "Kiwi Gold", kategorie: "Obst" },
+      { plu: "628", artikel: "Kokosnuss", kategorie: "Obst" },
+      { plu: "627", artikel: "Mango lose", kategorie: "Obst" },
+      { plu: "519", artikel: "Nashi Birne", kategorie: "Obst" },
+      { plu: "415", artikel: "Zitrone Bio", kategorie: "Obst" }
+    ];
+
+    // Badge styling per Kategorie
+    const getCategoryBadgeClass = (category) => {
+      switch(category) {
+        case 'Bake-Off':
+          return 'bg-amber-100 text-amber-900 border-amber-300 dark:bg-amber-950/50 dark:text-amber-200';
+        case 'Obst':
+          return 'bg-rose-100 text-rose-900 border-rose-300 dark:bg-rose-950/50 dark:text-rose-200';
+        case 'Gemüse':
+          return 'bg-emerald-100 text-emerald-900 border-emerald-300 dark:bg-emerald-950/50 dark:text-emerald-200';
+        case 'Aktion':
+          return 'bg-purple-100 text-purple-900 border-purple-300';
+        default:
+          return 'bg-blue-100 text-blue-900 border-blue-300';
+      }
+    };
+
+    const getCategoryIcon = (category) => {
+      switch(category) {
+        case 'Bake-Off': return 'croissant';
+        case 'Obst': return 'apple';
+        case 'Gemüse': return 'carrot';
+        case 'Aktion': return 'sparkles';
+        default: return 'package';
+      }
+    };
+
+    // --- MAIN APP COMPONENT ---
+    function App() {
+      const [customArticles, setCustomArticles] = useState(() => {
+        try {
+          const saved = localStorage.getItem('lidl_plu_custom_articles');
+          return saved ? JSON.parse(saved) : [];
+        } catch(e) {
+          return [];
+        }
+      });
+
+      const [searchQuery, setSearchQuery] = useState('');
+      const [debouncedQuery, setDebouncedQuery] = useState('');
+      const [selectedCategory, setSelectedCategory] = useState('Alle');
+      const [copiedPlu, setCopiedPlu] = useState(null);
+      const [favoritePlus, setFavoritePlus] = useState(() => {
+        try {
+          const saved = localStorage.getItem('lidl_plu_favorites');
+          return saved ? JSON.parse(saved) : [];
+        } catch(e) {
+          return [];
+        }
+      });
+      const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
+      
+      // Add Article Modal & Form State
+      const [isModalOpen, setIsModalOpen] = useState(false);
+      const [newPlu, setNewPlu] = useState('');
+      const [newArtikel, setNewArtikel] = useState('');
+      const [newKategorie, setNewKategorie] = useState('Aktion');
+      const [formError, setFormError] = useState('');
+      const [toastMessage, setToastMessage] = useState(null);
+
+      const searchInputRef = useRef(null);
+      const fileInputRef = useRef(null);
+
+      // Save custom articles to localStorage
+      useEffect(() => {
+        try {
+          localStorage.setItem('lidl_plu_custom_articles', JSON.stringify(customArticles));
+        } catch(e) {}
+      }, [customArticles]);
+
+      // Save Favorites
+      useEffect(() => {
+        try {
+          localStorage.setItem('lidl_plu_favorites', JSON.stringify(favoritePlus));
+        } catch(e) {}
+      }, [favoritePlus]);
+
+      // Combine default articles and user added custom articles
+      const allArticles = useMemo(() => {
+        return [...customArticles, ...DEFAULT_ARTICLE_DATABASE];
+      }, [customArticles]);
+
+      // Debounce Logik für "as-you-type"
+      useEffect(() => {
+        const handler = setTimeout(() => {
+          setDebouncedQuery(searchQuery);
+        }, 80);
+        return () => clearTimeout(handler);
+      }, [searchQuery]);
+
+      // Setup Fuse.js für Fuzzy Search
+      const fuse = useMemo(() => {
+        return new Fuse(allArticles, {
+          keys: [
+            { name: 'plu', weight: 0.7 },
+            { name: 'artikel', weight: 0.3 }
+          ],
+          threshold: 0.35,
+          distance: 100,
+          minMatchCharLength: 1,
+          ignoreLocation: true
+        });
+      }, [allArticles]);
+
+      // Dynamische Kategorien aus Daten ermitteln
+      const availableCategories = useMemo(() => {
+        const categories = new Set(allArticles.map(item => item.kategorie));
+        return ['Alle', ...Array.from(categories)];
+      }, [allArticles]);
+
+      // Such- & Filterergebnisse
+      const filteredResults = useMemo(() => {
+        let results = allArticles;
+
+        // 1. Kategoriefilter
+        if (selectedCategory !== 'Alle') {
+          results = results.filter(item => item.kategorie === selectedCategory);
+        }
+
+        // 2. Favoritenfilter
+        if (showFavoritesOnly) {
+          results = results.filter(item => favoritePlus.includes(item.plu));
+        }
+
+        // 3. Sucheingabe
+        if (debouncedQuery.trim() !== '') {
+          const query = debouncedQuery.trim();
+          
+          const isNumericSearch = /^[\d/]+$/.test(query);
+
+          if (isNumericSearch) {
+            results = results.filter(item => item.plu.includes(query));
+          } else {
+            const fuseResults = fuse.search(query);
+            if (selectedCategory !== 'Alle' || showFavoritesOnly) {
+              const ids = new Set(results.map(r => r.plu));
+              results = fuseResults.map(res => res.item).filter(item => ids.has(item.plu));
+            } else {
+              results = fuseResults.map(res => res.item);
+            }
+          }
+        }
+
+        return results;
+      }, [debouncedQuery, selectedCategory, showFavoritesOnly, favoritePlus, fuse, allArticles]);
+
+      // Handler zum Hinzufügen eines neuen Artikels
+      const handleAddArticle = (e) => {
+        e.preventDefault();
+        setFormError('');
+
+        const trimmedPlu = newPlu.trim();
+        const trimmedName = newArtikel.trim();
+
+        if (!trimmedPlu || !trimmedName) {
+          setFormError('Bitte gib sowohl eine PLU-Nummer als auch einen Artikelnamen ein.');
+          return;
+        }
+
+        // Check ob PLU bereits existiert
+        const exists = allArticles.some(a => a.plu === trimmedPlu && a.artikel.toLowerCase() === trimmedName.toLowerCase());
+        if (exists) {
+          setFormError('Dieser Artikel mit gleicher PLU existiert bereits.');
+          return;
+        }
+
+        const newEntry = {
+          plu: trimmedPlu,
+          artikel: trimmedName,
+          kategorie: newKategorie,
+          isCustom: true
+        };
+
+        setCustomArticles(prev => [newEntry, ...prev]);
+        setNewPlu('');
+        setNewArtikel('');
+        setIsModalOpen(false);
+
+        showToast(`Artikel "${trimmedName}" mit PLU ${trimmedPlu} hinzugefügt!`);
+      };
+
+      // Handler zum Löschen eines benutzereigenen Artikels
+      const handleDeleteCustomArticle = (pluToDelete, artikelName, e) => {
+        e.stopPropagation();
+        setCustomArticles(prev => prev.filter(item => !(item.plu === pluToDelete && item.artikel === artikelName)));
+        showToast(`Artikel "${artikelName}" entfernt.`);
+      };
+
+      // EXPORT: Gesamte Daten (Standard + Eigene + Favoriten) in daten.json herunterladen
+      const handleExportData = () => {
+        const exportObject = {
+          version: "1.0",
+          exportDate: new Date().toISOString(),
+          customArticles: customArticles,
+          favorites: favoritePlus,
+          allArticles: allArticles
+        };
+
+        const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(exportObject, null, 2));
+        const downloadAnchor = document.createElement('a');
+        downloadAnchor.setAttribute("href", dataStr);
+        downloadAnchor.setAttribute("download", "daten.json");
+        document.body.appendChild(downloadAnchor);
+        downloadAnchor.click();
+        downloadAnchor.remove();
+
+        showToast('Daten als "daten.json" exportiert!');
+      };
+
+      // IMPORT: Auswählen und Einlesen von daten.json
+      const handleImportData = (event) => {
+        const fileReader = new FileReader();
+        const file = event.target.files[0];
+
+        if (!file) return;
+
+        fileReader.onload = (e) => {
+          try {
+            const parsedData = JSON.parse(e.target.result);
+            
+            if (parsedData.customArticles || parsedData.allArticles) {
+              if (Array.isArray(parsedData.customArticles)) {
+                setCustomArticles(parsedData.customArticles);
+              }
+              if (Array.isArray(parsedData.favorites)) {
+                setFavoritePlus(parsedData.favorites);
+              }
+              showToast('Daten erfolgreich importiert!');
+            } 
+            else if (Array.isArray(parsedData)) {
+              const importedCustoms = parsedData.filter(imp => 
+                !DEFAULT_ARTICLE_DATABASE.some(def => def.plu === imp.plu && def.artikel.toLowerCase() === imp.artikel.toLowerCase())
+              ).map(item => ({ ...item, isCustom: true }));
+
+              setCustomArticles(importedCustoms);
+              showToast(`${importedCustoms.length} benutzerdefinierte Artikel geladen!`);
+            } else {
+              showToast('Ungültiges Dateiformat.');
+            }
+          } catch (error) {
+            console.error(error);
+            showToast('Fehler beim Lesen der JSON-Datei.');
+          }
+
+          event.target.value = '';
+        };
+
+        fileReader.readAsText(file);
+      };
+
+      const showToast = (msg) => {
+        setToastMessage(msg);
+        setTimeout(() => setToastMessage(null), 2500);
+      };
+
+      // Kopier-Aktion für PLU
+      const copyToClipboard = (plu, event) => {
+        if (event) event.stopPropagation();
+        
+        try {
+          const textArea = document.createElement("textarea");
+          textArea.value = plu;
+          textArea.style.position = "fixed";
+          textArea.style.left = "-9999px";
+          textArea.style.top = "0";
+          document.body.appendChild(textArea);
+          textArea.focus();
+          textArea.select();
+          document.execCommand('copy');
+          document.body.removeChild(textArea);
+        } catch (err) {
+          console.error("Kopieren fehlgeschlagen:", err);
+        }
+
+        setCopiedPlu(plu);
+        setTimeout(() => setCopiedPlu(null), 1800);
+      };
+
+      // Favorit umschalten
+      const toggleFavorite = (plu, event) => {
+        event.stopPropagation();
+        setFavoritePlus(prev => 
+          prev.includes(plu) ? prev.filter(p => p !== plu) : [...prev, plu]
+        );
+      };
+
+      // Lucide Icons nach Render re-initialisieren
+      useEffect(() => {
+        if (window.lucide) {
+          window.lucide.createIcons();
+        }
+      });
+
+      return (
+        <div className="min-h-screen flex flex-col pb-12">
+          
+          {/* Unsichtbarer Input für Datei-Import */}
+          <input 
+            type="file" 
+            ref={fileInputRef} 
+            onChange={handleImportData} 
+            accept=".json,application/json" 
+            className="hidden" 
+          />
+
+          {/* TOP HEADER */}
+          <header className="sticky top-0 z-40 bg-lidl-blue text-white shadow-md">
+            <div className="max-w-4xl mx-auto px-4 py-3 flex items-center justify-between">
+              
+              {/* Logo & Title */}
+              <div className="flex items-center gap-3">
+                <div className="bg-lidl-yellow p-1.5 rounded-xl text-lidl-blue font-black tracking-tighter text-xl border-2 border-white shadow-sm flex items-center justify-center w-10 h-10">
+                  <span className="text-lidl-red text-2xl font-black leading-none">L</span>
+                </div>
+                <div>
+                  <h1 className="text-lg font-extrabold tracking-tight leading-tight flex items-center gap-2">
+                    PLU-Finder
+                    <span className="text-xs bg-lidl-yellow text-lidl-blue font-bold px-2 py-0.5 rounded-full uppercase tracking-wider">
+                      PWA
+                    </span>
+                  </h1>
+                  <p className="text-xs text-blue-200">Schnellsuche am POS / Kasse</p>
+                </div>
+              </div>
+
+              {/* Action & Stat Counter */}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => { setIsModalOpen(true); setFormError(''); }}
+                  className="bg-lidl-yellow hover:bg-yellow-300 text-lidl-blue font-extrabold text-xs px-3 py-2 rounded-chip flex items-center gap-1.5 shadow-sm active:scale-95 transition-transform"
+                  title="Neuen Artikel mit PLU hinzufügen"
+                >
+                  <i data-lucide="plus" className="w-4 h-4 stroke-[3]"></i>
+                  <span className="hidden sm:inline">Artikel hinzufügen</span>
+                  <span className="sm:hidden">Neu</span>
+                </button>
+
+                <div className="hidden sm:flex items-center gap-2 bg-lidl-darkblue/60 px-3 py-1.5 rounded-chip text-xs border border-blue-400/20">
+                  <i data-lucide="database" className="w-4 h-4 text-lidl-yellow"></i>
+                  <span className="font-medium text-blue-100">{allArticles.length} Artikel</span>
+                </div>
+              </div>
+            </div>
+
+            {/* GELBER STRIP */}
+            <div className="h-1 bg-lidl-yellow w-full"></div>
+          </header>
+
+          {/* MAIN CONTENT AREA */}
+          <main className="max-w-4xl w-full mx-auto px-4 pt-6 flex-1 flex flex-col gap-5">
+            
+            {/* SEARCH & BACKUP SECTION */}
+            <section className="bg-lidl-surface rounded-expressive p-4 sm:p-6 shadow-expressive border border-slate-200/80 transition-all space-y-4">
+              
+              {/* Primary Search Input & Add Button */}
+              <div className="flex flex-col sm:flex-row items-stretch gap-3">
+                <div className="relative flex-1 flex items-center">
+                  <div className="absolute left-4 z-10 text-lidl-blue pointer-events-none flex items-center">
+                    <i data-lucide="search" className="w-6 h-6 stroke-[2.5]"></i>
+                  </div>
+                  
+                  <input
+                    ref={searchInputRef}
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Artikelname (z.B. 'Cola') oder PLU (z.B. '728')..."
+                    className="w-full bg-lidl-lightbg hover:bg-slate-100 focus:bg-white text-lidl-textPrimary text-base sm:text-lg font-medium pl-14 pr-12 py-4 rounded-card border-2 border-transparent focus:border-lidl-blue outline-none transition-all duration-200 placeholder:text-slate-400"
+                    autoFocus
+                  />
+
+                  {searchQuery && (
+                    <button 
+                      onClick={() => { setSearchQuery(''); searchInputRef.current?.focus(); }}
+                      className="absolute right-3 p-2 text-slate-400 hover:text-lidl-red rounded-full hover:bg-slate-200/60 transition-colors"
+                      title="Suche zurücksetzen"
+                    >
+                      <i data-lucide="x" className="w-5 h-5"></i>
+                    </button>
+                  )}
+                </div>
+
+                {/* Hinzufügen Button mobil */}
+                <button
+                  onClick={() => { setIsModalOpen(true); setFormError(''); }}
+                  className="sm:hidden bg-lidl-blue text-white font-bold py-3 px-4 rounded-card flex items-center justify-center gap-2 shadow-sm hover:bg-lidl-darkblue active:scale-98 transition-all"
+                >
+                  <i data-lucide="plus-circle" className="w-5 h-5"></i>
+                  <span>Neuen Artikel einpflegen</span>
+                </button>
+              </div>
+
+              {/* IMPORT / EXPORT BAR */}
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100 text-xs">
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold text-slate-500">Datensicherung:</span>
+                  <button
+                    onClick={handleExportData}
+                    className="px-3 py-1.5 rounded-lg bg-blue-50 hover:bg-blue-100 text-lidl-blue font-bold flex items-center gap-1.5 transition-colors border border-blue-200"
+                    title="Aktuelle Daten als daten.json speichern"
+                  >
+                    <i data-lucide="download" className="w-3.5 h-3.5"></i>
+                    <span>Daten exportieren</span>
+                  </button>
+
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold flex items-center gap-1.5 transition-colors border border-slate-200"
+                    title="Gespeicherte daten.json hochladen"
+                  >
+                    <i data-lucide="upload" className="w-3.5 h-3.5"></i>
+                    <span>Daten importieren</span>
+                  </button>
+                </div>
+
+                <div className="text-slate-400 text-[11px] hidden sm:block">
+                  JSON-Dateien werden lokal verarbeitet
+                </div>
+              </div>
+
+              {/* FILTER CHIPS */}
+              <div className="flex items-center gap-2 pt-1 overflow-x-auto custom-scrollbar pb-1">
+                {availableCategories.map((category) => {
+                  const isActive = selectedCategory === category && !showFavoritesOnly;
+                  return (
+                    <button
+                      key={category}
+                      onClick={() => {
+                        setSelectedCategory(category);
+                        setShowFavoritesOnly(false);
+                      }}
+                      className={`px-4 py-2 rounded-chip text-sm font-semibold whitespace-nowrap transition-all duration-200 flex items-center gap-2 border ${
+                        isActive 
+                          ? 'bg-lidl-blue text-white border-lidl-blue shadow-md scale-[1.02]' 
+                          : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-100 hover:border-slate-300'
+                      }`}
+                    >
+                      {category !== 'Alle' && (
+                        <i data-lucide={getCategoryIcon(category)} className="w-4 h-4"></i>
+                      )}
+                      {category}
+                    </button>
+                  );
+                })}
+
+                {/* Favoriten Filter Button */}
+                <button
+                  onClick={() => setShowFavoritesOnly(!showFavoritesOnly)}
+                  className={`px-4 py-2 rounded-chip text-sm font-semibold whitespace-nowrap transition-all duration-200 flex items-center gap-1.5 border ml-auto ${
+                    showFavoritesOnly 
+                      ? 'bg-amber-500 text-white border-amber-600 shadow-md' 
+                      : 'bg-white text-amber-600 border-amber-200 hover:bg-amber-50'
+                  }`}
+                >
+                  <i data-lucide="star" className={`w-4 h-4 ${showFavoritesOnly ? 'fill-white' : 'fill-amber-500'}`}></i>
+                  Favoriten ({favoritePlus.length})
+                </button>
+              </div>
+            </section>
+
+            {/* RESULTS HEADER */}
+            <div className="flex items-center justify-between px-2 text-sm text-lidl-textSecondary">
+              <p className="font-semibold">
+                {filteredResults.length} {filteredResults.length === 1 ? 'Artikel gefunden' : 'Artikel gefunden'}
+                {debouncedQuery && <span className="text-lidl-blue font-normal"> für "{debouncedQuery}"</span>}
+              </p>
+              
+              {debouncedQuery && (
+                <span className="text-xs bg-slate-200 px-2.5 py-1 rounded-full font-medium text-slate-700">
+                  Fuzzy Search aktiv
+                </span>
+              )}
+            </div>
+
+            {/* RESULT LIST */}
+            {filteredResults.length > 0 ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                {filteredResults.map((item) => {
+                  const isFav = favoritePlus.includes(item.plu);
+                  const isJustCopied = copiedPlu === item.plu;
+
+                  return (
+                    <div
+                      key={item.plu + item.artikel}
+                      onClick={(e) => copyToClipboard(item.plu, e)}
+                      className="group relative bg-lidl-surface hover:bg-blue-50/40 rounded-card p-4 shadow-sm hover:shadow-expressive border border-slate-200/90 hover:border-blue-300 transition-all duration-200 cursor-pointer flex items-start justify-between gap-3 overflow-hidden"
+                    >
+                      {/* Details */}
+                      <div className="flex items-start gap-3.5 min-w-0 flex-1">
+                        {/* PLU Badge */}
+                        <div className="flex flex-col items-center justify-center bg-lidl-blue text-white rounded-2xl w-18 h-16 min-w-[72px] px-1 shadow-sm group-hover:scale-105 transition-transform duration-200 shrink-0">
+                          <span className="text-[10px] uppercase font-bold tracking-wider text-lidl-yellow leading-tight">PLU</span>
+                          <span className="text-lg font-extrabold tracking-tight leading-none mt-0.5 text-center">{item.plu}</span>
+                        </div>
+
+                        {/* Text (voll ausgeschrieben) */}
+                        <div className="min-w-0 flex-1">
+                          <h3 className="font-bold text-base text-lidl-textPrimary group-hover:text-lidl-blue transition-colors leading-snug break-words">
+                            {item.artikel}
+                          </h3>
+                          
+                          <div className="flex items-center gap-2 mt-2 flex-wrap">
+                            <span className={`text-[11px] font-bold px-2.5 py-0.5 rounded-full border ${getCategoryBadgeClass(item.kategorie)}`}>
+                              {item.kategorie}
+                            </span>
+                            {item.isCustom && (
+                              <span className="text-[10px] font-bold bg-blue-100 text-lidl-blue px-2 py-0.5 rounded-full border border-blue-200">
+                                Eigen
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Action Buttons */}
+                      <div className="flex items-center gap-1 shrink-0 self-center">
+                        {/* Delete Custom Article */}
+                        {item.isCustom && (
+                          <button
+                            onClick={(e) => handleDeleteCustomArticle(item.plu, item.artikel, e)}
+                            className="p-2 rounded-full text-slate-300 hover:text-lidl-red hover:bg-red-50 transition-colors"
+                            title="Eigenen Artikel löschen"
+                          >
+                            <i data-lucide="trash-2" className="w-4 h-4"></i>
+                          </button>
+                        )}
+
+                        {/* Favorite */}
+                        <button
+                          onClick={(e) => toggleFavorite(item.plu, e)}
+                          className={`p-2 rounded-full transition-colors ${
+                            isFav 
+                              ? 'text-amber-500 hover:bg-amber-50' 
+                              : 'text-slate-300 hover:text-amber-400 hover:bg-slate-100'
+                          }`}
+                          title={isFav ? "Aus Favoriten entfernen" : "Zu Favoriten hinzufügen"}
+                        >
+                          <i data-lucide="star" className={`w-5 h-5 ${isFav ? 'fill-amber-500' : ''}`}></i>
+                        </button>
+
+                        {/* Copy */}
+                        <button
+                          onClick={(e) => copyToClipboard(item.plu, e)}
+                          className={`px-3 py-2 rounded-xl font-bold text-xs flex items-center gap-1.5 transition-all shadow-sm ${
+                            isJustCopied 
+                              ? 'bg-emerald-600 text-white scale-105' 
+                              : 'bg-lidl-lightbg text-lidl-blue hover:bg-lidl-yellow hover:text-lidl-blue'
+                          }`}
+                        >
+                          <i data-lucide={isJustCopied ? "check" : "copy"} className="w-4 h-4"></i>
+                          <span className="hidden sm:inline">{isJustCopied ? "Kopiert!" : "Kopieren"}</span>
+                        </button>
+                      </div>
+
+                      {/* Flash feedback */}
+                      {isJustCopied && (
+                        <div className="absolute bottom-0 left-0 right-0 h-1 bg-emerald-500 animate-pulse"></div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              /* EMPTY STATE */
+              <div className="bg-lidl-surface rounded-expressive p-8 text-center shadow-sm border border-slate-200/80 my-4 flex flex-col items-center">
+                <div className="w-16 h-16 bg-red-50 text-lidl-red rounded-full flex items-center justify-center mb-3">
+                  <i data-lucide="search-x" className="w-8 h-8"></i>
+                </div>
+                <h3 className="text-lg font-bold text-lidl-textPrimary">Keine Artikel gefunden</h3>
+                <p className="text-sm text-lidl-textSecondary max-w-md mt-1">
+                  Für "<span className="font-semibold text-lidl-textPrimary">{searchQuery}</span>" existiert kein passender Eintrag.
+                </p>
+                
+                <div className="flex flex-wrap justify-center gap-3 mt-4">
+                  <button
+                    onClick={() => { setSearchQuery(''); setSelectedCategory('Alle'); setShowFavoritesOnly(false); }}
+                    className="px-4 py-2.5 bg-slate-100 text-slate-700 rounded-chip font-semibold text-sm hover:bg-slate-200 transition-colors"
+                  >
+                    Suche zurücksetzen
+                  </button>
+                  <button
+                    onClick={() => { setIsModalOpen(true); setNewArtikel(searchQuery); }}
+                    className="px-4 py-2.5 bg-lidl-blue text-white rounded-chip font-semibold text-sm hover:bg-lidl-darkblue transition-colors flex items-center gap-1.5"
+                  >
+                    <i data-lucide="plus" className="w-4 h-4"></i>
+                    <span>"{searchQuery}" neu anlegen</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+          </main>
+
+          {/* MODAL: NEUEN ARTIKEL EINPFLEGEN */}
+          {isModalOpen && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-fade-in">
+              <div className="bg-lidl-surface rounded-expressive max-w-md w-full p-6 shadow-floating border border-slate-100 relative max-h-[90vh] overflow-y-auto">
+                
+                {/* Header */}
+                <div className="flex items-center justify-between border-b border-slate-100 pb-4 mb-4">
+                  <div className="flex items-center gap-2.5">
+                    <div className="bg-lidl-blue/10 text-lidl-blue p-2 rounded-xl">
+                      <i data-lucide="package-plus" className="w-6 h-6"></i>
+                    </div>
+                    <div>
+                      <h2 className="text-lg font-extrabold text-lidl-textPrimary">Neuen Artikel anlegen</h2>
+                      <p className="text-xs text-lidl-textSecondary">Dauerhaft in deiner App speichern</p>
+                    </div>
+                  </div>
+                  <button 
+                    onClick={() => setIsModalOpen(false)}
+                    className="text-slate-400 hover:text-slate-600 p-1.5 rounded-full hover:bg-slate-100 transition-colors"
+                  >
+                    <i data-lucide="x" className="w-5 h-5"></i>
+                  </button>
+                </div>
+
+                {/* Form */}
+                <form onSubmit={handleAddArticle} className="space-y-4">
+                  
+                  {/* PLU Input */}
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
+                      PLU-Nummer *
+                    </label>
+                    <input
+                      type="text"
+                      value={newPlu}
+                      onChange={(e) => setNewPlu(e.target.value)}
+                      placeholder="z.B. 728"
+                      className="w-full bg-lidl-lightbg text-lidl-textPrimary font-semibold px-4 py-3 rounded-card border border-slate-200 focus:border-lidl-blue focus:bg-white outline-none transition-all"
+                      required
+                    />
+                  </div>
+
+                  {/* Artikelname Input */}
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
+                      Artikelname *
+                    </label>
+                    <input
+                      type="text"
+                      value={newArtikel}
+                      onChange={(e) => setNewArtikel(e.target.value)}
+                      placeholder="z.B. Coca-Cola 1,5L"
+                      className="w-full bg-lidl-lightbg text-lidl-textPrimary font-semibold px-4 py-3 rounded-card border border-slate-200 focus:border-lidl-blue focus:bg-white outline-none transition-all"
+                      required
+                    />
+                  </div>
+
+                  {/* Kategorie Dropdown */}
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
+                      Kategorie *
+                    </label>
+                    <select
+                      value={newKategorie}
+                      onChange={(e) => setNewKategorie(e.target.value)}
+                      className="w-full bg-lidl-lightbg text-lidl-textPrimary font-semibold px-4 py-3 rounded-card border border-slate-200 focus:border-lidl-blue focus:bg-white outline-none transition-all cursor-pointer"
+                    >
+                      <option value="Aktion">Aktion / Sonstiges</option>
+                      <option value="Obst">Obst</option>
+                      <option value="Gemüse">Gemüse</option>
+                      <option value="Bake-Off">Bake-Off</option>
+                    </select>
+                  </div>
+
+                  {/* Error Feedback */}
+                  {formError && (
+                    <div className="p-3 rounded-xl bg-red-50 text-lidl-red text-xs font-semibold flex items-center gap-2 border border-red-200">
+                      <i data-lucide="alert-circle" className="w-4 h-4 shrink-0"></i>
+                      <span>{formError}</span>
+                    </div>
+                  )}
+
+                  {/* Action Buttons */}
+                  <div className="flex gap-3 pt-3">
+                    <button
+                      type="button"
+                      onClick={() => setIsModalOpen(false)}
+                      className="flex-1 py-3 text-slate-600 font-bold text-sm bg-slate-100 hover:bg-slate-200 rounded-chip transition-colors"
+                    >
+                      Abbrechen
+                    </button>
+                    <button
+                      type="submit"
+                      className="flex-1 py-3 bg-lidl-blue hover:bg-lidl-darkblue text-white font-extrabold text-sm rounded-chip shadow-md transition-all active:scale-98"
+                    >
+                      Speichern
+                    </button>
+                  </div>
+
+                </form>
+
+              </div>
+            </div>
+          )}
+
+          {/* FLOATING TOAST NOTIFICATION */}
+          {(copiedPlu || toastMessage) && (
+            <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-lidl-blue text-white px-5 py-3 rounded-card shadow-floating flex items-center gap-3 border border-blue-400/30 animate-bounce">
+              <div className="bg-lidl-yellow text-lidl-blue p-1 rounded-full">
+                <i data-lucide="check" className="w-4 h-4 stroke-[3]"></i>
+              </div>
+              <span className="text-sm font-bold">
+                {copiedPlu ? `PLU ${copiedPlu} in Zwischenablage kopiert!` : toastMessage}
+              </span>
+            </div>
+          )}
+
+          {/* FOOTER */}
+          <footer className="mt-auto pt-8 text-center text-xs text-slate-400">
+            <p>Lidl PLU-Finder • POS PWA Tool • Material Expressive Design</p>
+          </footer>
+        </div>
+      );
+    }
+
+    // Render App
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
