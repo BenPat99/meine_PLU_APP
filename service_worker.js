@@ -1,32 +1,26 @@
 // Name des Caches
-const CACHE_NAME = 'lidl-plu-cache-v1';
+const CACHE_NAME = 'lidl-plu-cache-v2';
 
-// Dateien, die offline verfügbar gemacht werden
+// Nur die absolut notwendigen lokalen Dateien sofort cachen
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
   './manifest.json',
-  'https://cdn.tailwindcss.com',
-  'https://unpkg.com/react@18/umd/react.production.min.js',
-  'https://unpkg.com/react-dom@18/umd/react-dom.production.min.js',
-  'https://unpkg.com/@babel/standalone/babel.min.js',
-  'https://cdn.jsdelivr.net/npm/fuse.js@6.6.2',
-  'https://unpkg.com/lucide@latest',
-  'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap'
+  './icon.png'
 ];
 
-// Installation: Ressourcen in Cache speichern
+// Installation: Nur die lokalen Basis-Dateien sichern
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
-      console.log('[Service Worker] Caching App Shell & CDN Ressourcen...');
+      console.log('[Service Worker] Lokale Basis-Dateien gecacht');
       return cache.addAll(ASSETS_TO_CACHE);
     })
   );
   self.skipWaiting();
 });
 
-// Aktivierung: Alte Caches aufräumen
+// Aktivierung: Alten Cache löschen
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((cacheNames) => {
@@ -43,28 +37,30 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
-// Netzwerkanfragen abfangen (Cache-First Strategie)
+// Dynamische Cache-Strategie: Findet und speichert CDN-Dateien im laufenden Betrieb
 self.addEventListener('fetch', (event) => {
   event.respondWith(
     caches.match(event.request).then((cachedResponse) => {
+      // Wenn im Cache vorhanden, sofort nutzen (Offline-Modus)
       if (cachedResponse) {
         return cachedResponse;
       }
+
+      // Ansonsten aus dem Internet laden und für das nächste Mal im Cache ablegen
       return fetch(event.request).then((networkResponse) => {
-        if (
-          !networkResponse ||
-          networkResponse.status !== 200 ||
-          (networkResponse.type !== 'basic' && networkResponse.type !== 'cors')
-        ) {
-          return networkResponse;
+        // Externe CDNs (Tailwind, React, Lucide etc.) sicher mitspeichern
+        if (networkResponse && networkResponse.status === 200) {
+          const responseToCache = networkResponse.clone();
+          caches.open(CACHE_NAME).then((cache) => {
+            cache.put(event.request, responseToCache);
+          });
         }
-        const responseToCache = networkResponse.clone();
-        caches.open(CACHE_NAME).then((cache) => {
-          cache.put(event.request, responseToCache);
-        });
         return networkResponse;
       }).catch(() => {
-        return caches.match('./index.html');
+        // Fallback falls komplett offline und Datei nicht im Cache
+        if (event.request.mode === 'navigate') {
+          return caches.match('./index.html');
+        }
       });
     })
   );
